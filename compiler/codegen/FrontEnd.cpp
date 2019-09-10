@@ -128,12 +128,12 @@ uintptrj_t TR_FrontEnd::getOffsetOfDiscontiguousArraySizeField()  { TR_UNIMPLEME
 uintptrj_t TR_FrontEnd::getOffsetOfIndexableSizeField()           { TR_UNIMPLEMENTED(); return 0; }
 
 
-int32_t
-TR_FrontEnd::getObjectAlignmentInBytes()
-   {
-   TR_UNIMPLEMENTED();
-   return 0;
-   }
+//int32_t
+//TR_FrontEnd::getObjectAlignmentInBytes()
+//   {
+//   TR_UNIMPLEMENTED();
+//   return 0;
+//   }
 
 
 char *
