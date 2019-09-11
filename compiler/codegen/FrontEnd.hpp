@@ -194,7 +194,6 @@ public:
    virtual int32_t getArraySpineShift(int32_t);
    virtual int32_t getArrayletMask(int32_t);
    virtual int32_t getArrayletLeafIndex(int32_t, int32_t);
-   virtual int32_t getObjectAlignmentInBytes();
    virtual uintptrj_t getOffsetOfContiguousArraySizeField();
    virtual uintptrj_t getOffsetOfDiscontiguousArraySizeField();
    virtual uintptrj_t getObjectHeaderSizeInBytes();
