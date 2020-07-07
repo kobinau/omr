@@ -12859,6 +12859,80 @@ bool canTransformOp(bool canTransformAdd, bool canTransformSub, TR::Node *node, 
    return true;
    }
 
+// Overflow/Underflow handling:
+// Must detect overflow without causing overflow:
+// Equation: add operation: x + Const1 < Const2 --> x < Const2 - Const1
+//          sub operation: x - Const1 < Const2 --> x < Const2 + Const1
+
+//Signed Constants may be negative, therefore underflow and overflow are possible for both add and sub operations
+bool isNotSignedOverflow(bool isAddOp, bool isSubOp, uint64_t oldConst1, uint64_t oldConst2, uint64_t signedMax){
+   return (isAddOp && !(oldConst1 < 0 && (oldConst2 > signedMax + oldConst1)))
+            || (isSubOp && !(oldConst1 > 0 && (oldConst2 > signedMax - oldConst1)));
+}
+
+bool isNotSignedUnderflow(bool isAddOp, bool isSubOp, uint64_t oldConst1, uint64_t oldConst2, uint64_t signedMin){
+   return (isAddOp && !(oldConst1 > 0 && (oldConst2 < signedMin + oldConst1)))
+            || (isSubOp && !(oldConst1 < 0 && (oldConst2 < signedMin - oldConst1)));
+}
+
+// Unsigned constants cannot be negative therefore
+// sub operation transform, x<Const2+Const1, can only be Overflow
+bool isNotUnsignedOverflow(bool isSubOp, uint64_t oldUConst1, uint64_t oldUConst2, uint64_t unsignedMax){
+   return isSubOp && !(oldUConst2 > unsignedMax - oldUConst1);
+}
+
+// Unsigned constants cannot be negative therefore
+// add operation transform, x<Const2-Const1, can only be Underflow
+// UnsignedMin is always 0
+bool isNotUnsignedUnderflow(bool isAddOp, uint64_t oldUConst1, uint64_t oldUConst2){
+   return isAddOp && !(oldUConst2 < oldUConst1);
+}
+
+/**
+ * \brief
+ *
+ * Analyse comparison nodes to identify the type of operation to
+ * perform, and prevent overflow and underflow. The possible
+ * operations for simplification are:
+ *
+ * 1. Signed comparisons of byte, short, int, and long values.
+ * 2. Unsigned (in)equality of byte, short, int, and long values.
+ *
+ * \details
+ *
+ * \verbatim
+ *
+ * As an example, assume the following is the original expression
+ *        x + oldConst1 < oldConst2
+ *
+ * This expression can be simplified to
+ *        x < newConst
+ *        where newConst = oldConst2 - oldConst1
+ *
+ * The tree Simplification is as follows:
+ *       ificmple
+ *          iadd
+ *             iload  x
+ *             iconst oldConst1
+ *          iconst oldConst2
+ *
+ * Transforms into:
+ *       ificmple
+ *          iload  x
+ *          iconst newConst
+ *
+ * However if oldConst2-oldConst1>signedMax, an overflow will occur,
+ * Or if oldConst2-oldConst1<signedMin, an underflow will occur,
+ * and no transformation should occur
+ *
+ * \endverbatim
+ *
+ *
+ * \param opNode        the add/sub operation subnode being simplified
+ * \param secondChild   the constant compared with result of opNode operation (oldConst2)
+ * \param s             the simplifier object
+ * \param node          the comparison node being simpilfied
+ **/
 TR::Node *
 arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChild, TR::Simplifier *s, TR::Node *node,
                                           bool isSigned, bool isAddOp, bool isSubOp)
@@ -12891,37 +12965,21 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
             unsignedMax = TR::getMaxUnsigned<TR::Int64>();
             break;
          default:
-            if (s->trace())
-               traceMsg(s->comp(),
-                        "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
-                        node->getGlobalIndex());
-
             TR_ASSERT_FATAL(false, "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
                             node->getGlobalIndex());
             break;
          }
-      //under/overflow handling:
-      //Must detect under/overflow without causing under/overflow
-      //Transformation x-a>b ----> x>b+a has two cases of under/overflow:
-      //overflow of x-a and overflow of b+a 
-      //x-a is handled by cannotOverflow flag;  only concerned about under/overflow from constant transformation. 
-      
-     
-      //For Unsigned Operations, a, b are positive, so add op must handle underFlow
-      //x+a>b  --opt--> x>b-a CASE OF UNDERFLOW IF b-a<unsignedMin
-      //unsignedMin is always 0
-      bool canTransformAdd = isAddOp
-                             && !(oldUConst2 < oldUConst1);
-      //sub op must handle overflow
-      //x-a>b --opt--> x>b+a CASE OF OVERFLOW IF b+a>unsignedMax
-      bool canTransformSub = isSubOp
-                             && !(oldUConst2 > unsignedMax - oldUConst1);
+
+      bool canTransformAdd = isNotUnsignedUnderflow(isAddOp, oldUConst1, oldUConst2);
+
+      bool canTransformSub = isNotUnsignedOverflow(isSubOp, oldUConst1, oldUConst2, unsignedMax);
+
 
       if (!canTransformOp(canTransformAdd, canTransformSub, node, s))
          return NULL;
 
-      uint64_t newUConst = 0;
-      newUConst = isAddOp ? (oldUConst2 - oldUConst1) : (oldUConst2 + oldUConst1);
+      uint64_t newUConst = isAddOp ? (oldUConst2 - oldUConst1) : (oldUConst2 + oldUConst1);
+
       // It's not recommended to mutate the value of an existing constant node by
       // calling constNode->setConstValue()
       // Hence, create and set new node here,
@@ -12960,30 +13018,23 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
             signedMin = TR::getMinSigned<TR::Int64>();
             break;
          default:
-            if (s->trace())
-               traceMsg(s->comp(),
-                        "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
-                        node->getGlobalIndex());
-            TR_ASSERT_FATAL(false, "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
+              TR_ASSERT_FATAL(false, "\nEliminating add/sub under compare node n%dn failed due to opcode data type\n",
                             node->getGlobalIndex());
 
             break;
          }
-      //for signed Constants, overflow and underflow are possible for either add or sub operation
-      //and both cases must be handled for each operation.
-      bool canTransformAdd = isAddOp
-                             && !(oldConst1 > 0 && (oldConst2 < signedMin + oldConst1))
-                             && !(oldConst1 < 0 && (oldConst2 > signedMax + oldConst1));
-      bool canTransformSub = isSubOp
-                             && !(oldConst1 > 0 && (oldConst2 > signedMax - oldConst1))
-                             && !(oldConst1 < 0 && (oldConst2 < signedMin - oldConst1));
+
+      bool canTransformAdd = isNotSignedOverflow( isAddOp, 0, oldConst1, oldConst2, signedMax)
+                             && isNotSignedUnderflow( isAddOp, 0, oldConst1, oldConst2, signedMin);
+
+      bool canTransformSub = isNotSignedOverflow( 0, isSubOp, oldConst1, oldConst2, signedMax)
+                             && isNotSignedUnderflow( 0, isSubOp, oldConst1, oldConst2, signedMin);
 
       if (!canTransformOp(canTransformAdd, canTransformSub, node, s))
          return NULL;
 
 
-      int64_t newConst = 0;
-      newConst = isAddOp ? (oldConst2 - oldConst1) : (oldConst2 + oldConst1);
+      int64_t newConst = isAddOp ? (oldConst2 - oldConst1) : (oldConst2 + oldConst1);
       TR::Node *newConstNode = TR::Node::create(secondChild, secondChild->getOpCodeValue(), 0);
       newConstNode->setLongInt(newConst);
       return newConstNode;
@@ -13003,12 +13054,26 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
  * \details
  *
  * \verbatim
+ *
  * As an example, assume the following is the original expression
  *        x + oldConst1 > oldConst2
  *
  * This expression can be simplified to
  *        x > newConst
  *        where newConst = oldConst2 - oldConst1
+ *
+ * The tree Simplification is as follows:
+ *       ificmple
+ *          iadd
+ *             iload  x
+ *             iconst 17
+ *          iconst 19
+ *
+ * Transforms into:
+ *       ificmple
+ *          iload  x
+ *          iconst 2
+ *
  * The newConst calculation should not produce overflow or underflow.
  * \endverbatim
  *
