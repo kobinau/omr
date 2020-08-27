@@ -12845,19 +12845,7 @@ TR::Node *su2dSimplifier(TR::Node * node, TR::Block * block, TR::Simplifier * s)
    }
 
 
-bool canTransformOp(bool canTransformAdd, bool canTransformSub, TR::Node *node, TR::Simplifier *s)
-   {
-   if (!(canTransformAdd || canTransformSub))
-      {
-      if (s->trace())
-         traceMsg(s->comp(),
-                  "\nEliminating add/sub under order compare node n%dn failed due to overflow\n",
-                  node->getGlobalIndex());
 
-      return false;
-      }
-   return true;
-   }
 
 // Overflow/Underflow handling:
 // Must detect overflow without causing overflow:
@@ -12865,12 +12853,12 @@ bool canTransformOp(bool canTransformAdd, bool canTransformSub, TR::Node *node, 
 //          sub operation: x - Const1 < Const2 --> x < Const2 + Const1
 
 //Signed Constants may be negative, therefore underflow and overflow are possible for both add and sub operations
-bool isNotSignedOverflow(bool isAddOp, bool isSubOp, uint64_t oldConst1, uint64_t oldConst2, uint64_t signedMax){
+bool isNotSignedOverflow(bool isAddOp, bool isSubOp, int64_t oldConst1, int64_t oldConst2, int64_t signedMax){
    return (isAddOp && !(oldConst1 < 0 && (oldConst2 > signedMax + oldConst1)))
             || (isSubOp && !(oldConst1 > 0 && (oldConst2 > signedMax - oldConst1)));
 }
 
-bool isNotSignedUnderflow(bool isAddOp, bool isSubOp, uint64_t oldConst1, uint64_t oldConst2, uint64_t signedMin){
+bool isNotSignedUnderflow(bool isAddOp, bool isSubOp, int64_t oldConst1, int64_t oldConst2, int64_t signedMin){
    return (isAddOp && !(oldConst1 > 0 && (oldConst2 < signedMin + oldConst1)))
             || (isSubOp && !(oldConst1 < 0 && (oldConst2 < signedMin - oldConst1)));
 }
@@ -12935,8 +12923,15 @@ bool isNotUnsignedUnderflow(bool isAddOp, uint64_t oldUConst1, uint64_t oldUCons
  **/
 TR::Node *
 arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChild, TR::Simplifier *s, TR::Node *node,
-                                          bool isSigned, bool isAddOp, bool isSubOp)
+                                          bool isSigned)
    {
+
+   TR::ILOpCodes op = opNode->getOpCodeValue();
+
+   // Get recognized operation types. Unsigned IL OpCodes are deprecated and not supported here.
+   bool isAddOp = (op == TR::iadd || op == TR::ladd || op == TR::sadd || op == TR::badd);
+   bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
+
 
    TR::DataType DataType = secondChild->getDataType();
    if (!isSigned)
@@ -12970,13 +12965,21 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
             break;
          }
 
+
       bool canTransformAdd = isNotUnsignedUnderflow(isAddOp, oldUConst1, oldUConst2);
 
       bool canTransformSub = isNotUnsignedOverflow(isSubOp, oldUConst1, oldUConst2, unsignedMax);
 
 
-      if (!canTransformOp(canTransformAdd, canTransformSub, node, s))
+      if (!(canTransformAdd || canTransformSub))
+      {
+         if (s->trace())
+            traceMsg(s->comp(),
+                     "\nEliminating add/sub under order compare node n%dn failed due to overflow\n",
+                     node->getGlobalIndex());
+
          return NULL;
+      }
 
       uint64_t newUConst = isAddOp ? (oldUConst2 - oldUConst1) : (oldUConst2 + oldUConst1);
 
@@ -13030,8 +13033,15 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
       bool canTransformSub = isNotSignedOverflow( 0, isSubOp, oldConst1, oldConst2, signedMax)
                              && isNotSignedUnderflow( 0, isSubOp, oldConst1, oldConst2, signedMin);
 
-      if (!canTransformOp(canTransformAdd, canTransformSub, node, s))
+      if (!(canTransformAdd || canTransformSub))
+      {
+         if (s->trace())
+            traceMsg(s->comp(),
+                     "\nEliminating add/sub under order compare node n%dn failed due to overflow\n",
+                     node->getGlobalIndex());
+
          return NULL;
+      }
 
 
       int64_t newConst = isAddOp ? (oldConst2 - oldConst1) : (oldConst2 + oldConst1);
@@ -13092,13 +13102,13 @@ TR::Node *removeArithmeticsUnderIntegralCompare(TR::Node *node,
 
    TR::Node *opNode = node->getFirstChild();
    TR::Node *secondChild = node->getSecondChild();
+
    TR::ILOpCodes op = opNode->getOpCodeValue();
 
    // Get recognized operation types. Unsigned IL OpCodes are deprecated and not supported here.
    bool isAddOp = (op == TR::iadd || op == TR::ladd || op == TR::sadd || op == TR::badd);
    bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
 
-   bool isSignedCompare = !(node->getOpCode().isUnsignedCompare());
 
    if ((isAddOp || isSubOp)
        && opNode->cannotOverflow()
@@ -13108,7 +13118,7 @@ TR::Node *removeArithmeticsUnderIntegralCompare(TR::Node *node,
        && (opNode->getFutureUseCount() == opNode->getReferenceCount() - 1))
       {
       TR::Node *newConstNode = arithUnderSignedAndUnsignedCompareHandler(opNode, secondChild, s, node,
-                                                                         isSignedCompare, isAddOp, isSubOp);
+                                                                         !(node->getOpCode().isUnsignedCompare()));
 
       // Done checking constant values. Transform the tree.
       if (newConstNode != NULL
