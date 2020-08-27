@@ -12853,26 +12853,32 @@ TR::Node *su2dSimplifier(TR::Node * node, TR::Block * block, TR::Simplifier * s)
 //          sub operation: x - Const1 < Const2 --> x < Const2 + Const1
 
 //Signed Constants may be negative, therefore underflow and overflow are possible for both add and sub operations
-bool isNotSignedOverflow(bool isAddOp, bool isSubOp, int64_t oldConst1, int64_t oldConst2, int64_t signedMax){
+bool isNotSignedOverflow(TR::ILOpCodes op, uint64_t oldConst1, uint64_t oldConst2, uint64_t signedMax){
+   bool isAddOp = (op == TR::iadd || op == TR::ladd || op == TR::sadd || op == TR::badd);
+   bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
    return (isAddOp && !(oldConst1 < 0 && (oldConst2 > signedMax + oldConst1)))
             || (isSubOp && !(oldConst1 > 0 && (oldConst2 > signedMax - oldConst1)));
 }
 
-bool isNotSignedUnderflow(bool isAddOp, bool isSubOp, int64_t oldConst1, int64_t oldConst2, int64_t signedMin){
+bool isNotSignedUnderflow(TR::ILOpCodes op, uint64_t oldConst1, uint64_t oldConst2, uint64_t signedMin){
+   bool isAddOp = (op == TR::iadd || op == TR::ladd || op == TR::sadd || op == TR::badd);
+   bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
    return (isAddOp && !(oldConst1 > 0 && (oldConst2 < signedMin + oldConst1)))
             || (isSubOp && !(oldConst1 < 0 && (oldConst2 < signedMin - oldConst1)));
 }
 
 // Unsigned constants cannot be negative therefore
 // sub operation transform, x<Const2+Const1, can only be Overflow
-bool isNotUnsignedOverflow(bool isSubOp, uint64_t oldUConst1, uint64_t oldUConst2, uint64_t unsignedMax){
+bool isNotUnsignedOverflow(TR::ILOpCodes op, uint64_t oldUConst1, uint64_t oldUConst2, uint64_t unsignedMax){
+   bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
    return isSubOp && !(oldUConst2 > unsignedMax - oldUConst1);
 }
 
 // Unsigned constants cannot be negative therefore
 // add operation transform, x<Const2-Const1, can only be Underflow
 // UnsignedMin is always 0
-bool isNotUnsignedUnderflow(bool isAddOp, uint64_t oldUConst1, uint64_t oldUConst2){
+bool isNotUnsignedUnderflow(TR::ILOpCodes op, uint64_t oldUConst1, uint64_t oldUConst2){
+   bool isAddOp = (op == TR::iadd || op == TR::ladd || op == TR::sadd || op == TR::badd);
    return isAddOp && !(oldUConst2 < oldUConst1);
 }
 
@@ -12927,10 +12933,8 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
    {
 
    TR::ILOpCodes op = opNode->getOpCodeValue();
-
    // Get recognized operation types. Unsigned IL OpCodes are deprecated and not supported here.
    bool isAddOp = (op == TR::iadd || op == TR::ladd || op == TR::sadd || op == TR::badd);
-   bool isSubOp = (op == TR::isub || op == TR::lsub || op == TR::ssub || op == TR::bsub);
 
 
    TR::DataType DataType = secondChild->getDataType();
@@ -12966,12 +12970,10 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
          }
 
 
-      bool canTransformAdd = isNotUnsignedUnderflow(isAddOp, oldUConst1, oldUConst2);
-
-      bool canTransformSub = isNotUnsignedOverflow(isSubOp, oldUConst1, oldUConst2, unsignedMax);
-
-
-      if (!(canTransformAdd || canTransformSub))
+   // The unsigned case either only requires an overflow check (for a sub operation)
+   // or an underflow check (for an add operation). When one evaluates to true, the optimization can be performed.
+      if (!(isNotUnsignedUnderflow(op, oldUConst1, oldUConst2)
+          || isNotUnsignedOverflow(op, oldUConst1, oldUConst2, unsignedMax)))
       {
          if (s->trace())
             traceMsg(s->comp(),
@@ -13027,13 +13029,10 @@ arithUnderSignedAndUnsignedCompareHandler(TR::Node *opNode, TR::Node *secondChil
             break;
          }
 
-      bool canTransformAdd = isNotSignedOverflow( isAddOp, 0, oldConst1, oldConst2, signedMax)
-                             && isNotSignedUnderflow( isAddOp, 0, oldConst1, oldConst2, signedMin);
 
-      bool canTransformSub = isNotSignedOverflow( 0, isSubOp, oldConst1, oldConst2, signedMax)
-                             && isNotSignedUnderflow( 0, isSubOp, oldConst1, oldConst2, signedMin);
 
-      if (!(canTransformAdd || canTransformSub))
+      if (!(isNotSignedOverflow( op, oldConst1, oldConst2, signedMax)
+            && isNotSignedUnderflow( op, oldConst1, oldConst2, signedMin)))
       {
          if (s->trace())
             traceMsg(s->comp(),
